@@ -35,7 +35,10 @@ const questionSchema = z.object({
   type: z.enum(["single_choice", "multiple_choice", "open_answer"]),
   text: z.string().min(1, "Введите текст вопроса"),
   points: z.number().min(1).default(1),
+  topic: z.string().optional(),
+  difficulty: z.enum(["easy", "medium", "hard"]).default("medium"),
   correctAnswer: z.string().optional(),
+  rubricCriteria: z.array(z.string()).optional(),
   imageUrl: z.string().optional(),
   videoUrl: z.string().optional(),
   options: z.array(z.object({
@@ -51,6 +54,10 @@ const testSchema = z.object({
   timeLimitMinutes: z.number().min(1).max(180).default(30),
   isPublished: z.boolean().default(false),
   isCompetitive: z.boolean().default(false),
+  isAdaptive: z.boolean().default(false),
+  isTemplate: z.boolean().default(false),
+  templateCategory: z.string().optional(),
+  scheduledAt: z.string().optional(),
   questions: z.array(questionSchema).min(1, "Добавьте хотя бы один вопрос"),
 });
 
@@ -70,6 +77,10 @@ export default function TestCreatePage() {
       timeLimitMinutes: 30,
       isPublished: false,
       isCompetitive: false,
+      isAdaptive: false,
+      isTemplate: false,
+      templateCategory: "",
+      scheduledAt: "",
       questions: [],
     },
   });
@@ -107,7 +118,10 @@ export default function TestCreatePage() {
       type,
       text: "",
       points: 1,
+      topic: "",
+      difficulty: "medium" as const,
       correctAnswer: "",
+      rubricCriteria: [],
       imageUrl: "",
       videoUrl: "",
       options: type !== "open_answer" 
@@ -399,6 +413,44 @@ export default function TestCreatePage() {
                             <div className="grid gap-4 sm:grid-cols-2">
                               <FormField
                                 control={form.control}
+                                name={`questions.${index}.topic`}
+                                render={({ field }) => (
+                                  <FormItem>
+                                    <FormLabel>Тема вопроса</FormLabel>
+                                    <FormControl>
+                                      <Input placeholder="Например: JOIN, Производные, Циклы" {...field} />
+                                    </FormControl>
+                                    <FormMessage />
+                                  </FormItem>
+                                )}
+                              />
+                              <FormField
+                                control={form.control}
+                                name={`questions.${index}.difficulty`}
+                                render={({ field }) => (
+                                  <FormItem>
+                                    <FormLabel>Сложность</FormLabel>
+                                    <Select value={field.value} onValueChange={field.onChange}>
+                                      <FormControl>
+                                        <SelectTrigger>
+                                          <SelectValue />
+                                        </SelectTrigger>
+                                      </FormControl>
+                                      <SelectContent>
+                                        <SelectItem value="easy">Лёгкий</SelectItem>
+                                        <SelectItem value="medium">Средний</SelectItem>
+                                        <SelectItem value="hard">Сложный</SelectItem>
+                                      </SelectContent>
+                                    </Select>
+                                    <FormMessage />
+                                  </FormItem>
+                                )}
+                              />
+                            </div>
+
+                            <div className="grid gap-4 sm:grid-cols-2">
+                              <FormField
+                                control={form.control}
                                 name={`questions.${index}.imageUrl`}
                                 render={({ field }) => (
                                   <FormItem>
@@ -449,26 +501,48 @@ export default function TestCreatePage() {
                             )}
 
                             {form.watch(`questions.${index}.type`) === "open_answer" && (
-                              <FormField
-                                control={form.control}
-                                name={`questions.${index}.correctAnswer`}
-                                render={({ field }) => (
-                                  <FormItem>
-                                    <FormLabel>Эталонный ответ (для AI-проверки)</FormLabel>
-                                    <FormControl>
-                                      <Textarea
-                                        placeholder="Введите эталонный ответ, который будет использован AI для оценки"
-                                        data-testid={`input-question-correct-answer-${index}`}
-                                        {...field}
-                                      />
-                                    </FormControl>
-                                    <FormDescription>
-                                      AI будет сравнивать ответ студента с этим эталоном
-                                    </FormDescription>
-                                    <FormMessage />
-                                  </FormItem>
-                                )}
-                              />
+                              <div className="space-y-4">
+                                <FormField
+                                  control={form.control}
+                                  name={`questions.${index}.correctAnswer`}
+                                  render={({ field }) => (
+                                    <FormItem>
+                                      <FormLabel>Эталонный ответ (для AI-проверки)</FormLabel>
+                                      <FormControl>
+                                        <Textarea
+                                          placeholder="Введите эталонный ответ, который будет использован AI для оценки"
+                                          data-testid={`input-question-correct-answer-${index}`}
+                                          {...field}
+                                        />
+                                      </FormControl>
+                                      <FormDescription>
+                                        AI будет сравнивать ответ студента с этим эталоном
+                                      </FormDescription>
+                                      <FormMessage />
+                                    </FormItem>
+                                  )}
+                                />
+                                <FormField
+                                  control={form.control}
+                                  name={`questions.${index}.rubricCriteria`}
+                                  render={({ field }) => (
+                                    <FormItem>
+                                      <FormLabel>Рубрика оценивания</FormLabel>
+                                      <FormControl>
+                                        <Textarea
+                                          value={(field.value || []).join("\n")}
+                                          onChange={(event) => field.onChange(event.target.value.split("\n").map((item) => item.trim()).filter(Boolean))}
+                                          placeholder="Каждый критерий с новой строки: полнота, терминология, аргументация"
+                                        />
+                                      </FormControl>
+                                      <FormDescription>
+                                        Эти критерии будут использоваться AI при проверке открытого ответа.
+                                      </FormDescription>
+                                      <FormMessage />
+                                    </FormItem>
+                                  )}
+                                />
+                              </div>
                             )}
                           </CardContent>
                         </Card>
@@ -520,6 +594,12 @@ export default function TestCreatePage() {
                     <p className="text-sm font-medium">Вопросов</p>
                     <p className="text-muted-foreground">{fields.length}</p>
                   </div>
+                  <div className="space-y-2">
+                    <p className="text-sm font-medium">Расписание</p>
+                    <p className="text-muted-foreground">
+                      {form.watch("scheduledAt") ? new Date(form.watch("scheduledAt") as string).toLocaleString("ru-RU") : "Сразу после публикации"}
+                    </p>
+                  </div>
                 </div>
 
                 <FormField
@@ -566,6 +646,79 @@ export default function TestCreatePage() {
                           data-testid="switch-competitive"
                         />
                       </FormControl>
+                    </FormItem>
+                  )}
+                />
+
+                <FormField
+                  control={form.control}
+                  name="isAdaptive"
+                  render={({ field }) => (
+                    <FormItem className="flex flex-row items-center justify-between rounded-lg border p-4">
+                      <div className="space-y-0.5">
+                        <FormLabel className="text-base">
+                          Адаптивный режим
+                        </FormLabel>
+                        <FormDescription>
+                          Следующий вопрос будет подбираться по текущему уровню ответа студента.
+                        </FormDescription>
+                      </div>
+                      <FormControl>
+                        <Switch checked={field.value} onCheckedChange={field.onChange} />
+                      </FormControl>
+                    </FormItem>
+                  )}
+                />
+
+                <FormField
+                  control={form.control}
+                  name="isTemplate"
+                  render={({ field }) => (
+                    <FormItem className="flex flex-row items-center justify-between rounded-lg border p-4">
+                      <div className="space-y-0.5">
+                        <FormLabel className="text-base">
+                          Сохранить как шаблон
+                        </FormLabel>
+                        <FormDescription>
+                          Такой тест не появится у студентов, но будет доступен в органайзере преподавателя.
+                        </FormDescription>
+                      </div>
+                      <FormControl>
+                        <Switch checked={field.value} onCheckedChange={field.onChange} />
+                      </FormControl>
+                    </FormItem>
+                  )}
+                />
+
+                {form.watch("isTemplate") && (
+                  <FormField
+                    control={form.control}
+                    name="templateCategory"
+                    render={({ field }) => (
+                      <FormItem>
+                        <FormLabel>Категория шаблона</FormLabel>
+                        <FormControl>
+                          <Input placeholder="Например: Контрольные, Практика, Экзамен" {...field} />
+                        </FormControl>
+                        <FormMessage />
+                      </FormItem>
+                    )}
+                  />
+                )}
+
+                <FormField
+                  control={form.control}
+                  name="scheduledAt"
+                  render={({ field }) => (
+                    <FormItem>
+                      <FormLabel>Дата и время публикации</FormLabel>
+                      <FormControl>
+                        <Input type="datetime-local" {...field} />
+                      </FormControl>
+                      <FormDescription>
+                        Оставьте пустым, чтобы тест был доступен сразу после публикации.
+                      </FormDescription>
+                      <FormMessage />
                     </FormItem>
                   )}
                 />

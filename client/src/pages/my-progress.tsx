@@ -24,21 +24,25 @@ function TrendIcon({ results }: { results: any[] }) {
 }
 
 export default function MyProgressPage() {
-  const { data: results, isLoading } = useQuery<any[]>({
+  const { data: resultsResponse, isLoading } = useQuery<any[] | { results?: any[] }>({
     queryKey: ["/api/student/results"],
   });
 
+  const results = Array.isArray(resultsResponse)
+    ? resultsResponse
+    : Array.isArray(resultsResponse?.results)
+      ? resultsResponse.results
+      : [];
+
   // Хронологический порядок для графика
-  const chartData = results
-    ? [...results]
-        .reverse()
-        .map((r, i) => ({
-          name: `${i + 1}`,
-          label: r.testTitle.length > 18 ? r.testTitle.slice(0, 18) + "…" : r.testTitle,
-          percent: r.percent,
-          date: r.completedAt ? new Date(r.completedAt).toLocaleDateString("ru-RU") : "",
-        }))
-    : [];
+  const chartData = [...results]
+    .reverse()
+    .map((r, i) => ({
+      name: `${i + 1}`,
+      label: r.testTitle.length > 18 ? r.testTitle.slice(0, 18) + "…" : r.testTitle,
+      percent: r.percent,
+      date: r.completedAt ? new Date(r.completedAt).toLocaleDateString("ru-RU") : "",
+    }));
 
   // Статистика по предметам
   const bySubject: Record<string, number[]> = {};

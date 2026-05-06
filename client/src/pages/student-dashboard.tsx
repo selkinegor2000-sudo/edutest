@@ -24,8 +24,20 @@ import { Star } from "lucide-react";
 import { Test, TestAttempt } from "@shared/schema";
 import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer } from "recharts";
 
-type AvailableTest = Test & { questionCount: number };
+type AvailableTest = Test & {
+  questionCount: number;
+  assignment?: {
+    dueAt: string | null;
+    createdAt: string;
+  } | null;
+};
 type AttemptWithTest = TestAttempt & { test: Test };
+type Assignment = {
+  id: string;
+  dueAt: string | null;
+  test: Test;
+  teacher: { fullName: string; username: string } | null;
+};
 
 export default function StudentDashboard() {
   const { user } = useAuth();
@@ -54,6 +66,10 @@ export default function StudentDashboard() {
     totalIncorrect: number;
   }>({
     queryKey: ["/api/recommendations"],
+  });
+
+  const { data: assignments } = useQuery<Assignment[]>({
+    queryKey: ["/api/assignments/my"],
   });
 
   const completedAttempts = myAttempts?.filter(a => a.status === "completed") || [];
@@ -280,6 +296,37 @@ export default function StudentDashboard() {
         </Card>
       )}
 
+      {assignments && assignments.length > 0 && (
+        <Card>
+          <CardHeader>
+            <CardTitle className="flex items-center gap-2">
+              <Clock className="h-5 w-5" />
+              Назначенные тесты
+            </CardTitle>
+            <CardDescription>
+              Тесты, которые преподаватель выдал лично или через группу
+            </CardDescription>
+          </CardHeader>
+          <CardContent>
+            <div className="space-y-3">
+              {assignments.slice(0, 4).map((assignment) => (
+                <div key={assignment.id} className="rounded-lg border p-4">
+                  <div className="flex items-center justify-between gap-3 flex-wrap">
+                    <div>
+                      <p className="font-medium">{assignment.test.title}</p>
+                      <p className="text-sm text-muted-foreground">{assignment.teacher?.fullName || "Преподаватель"}</p>
+                    </div>
+                    <Badge variant="outline">
+                      {assignment.dueAt ? `до ${new Date(assignment.dueAt).toLocaleDateString("ru-RU")}` : "без дедлайна"}
+                    </Badge>
+                  </div>
+                </div>
+              ))}
+            </div>
+          </CardContent>
+        </Card>
+      )}
+
       <Card>
         <CardHeader>
           <CardTitle className="flex items-center gap-2">
@@ -332,6 +379,12 @@ export default function StudentDashboard() {
                         <BookOpen className="h-3 w-3" />
                         {test.questionCount} вопросов
                       </span>
+                      {test.assignment?.dueAt && (
+                        <span className="flex items-center gap-1 text-orange-600">
+                          <Clock className="h-3 w-3" />
+                          до {new Date(test.assignment.dueAt).toLocaleDateString("ru-RU")}
+                        </span>
+                      )}
                     </div>
                   </div>
                   {(() => {

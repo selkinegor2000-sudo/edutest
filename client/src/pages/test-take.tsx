@@ -19,7 +19,8 @@ import {
   Loader2,
   AlertCircle,
   CheckCircle2,
-  Save
+  Save,
+  Sparkles
 } from "lucide-react";
 import { TestWithQuestions, TestAttempt } from "@shared/schema";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
@@ -29,6 +30,12 @@ type SavedAnswers = {
     text?: string;
     selectedOptions?: string[];
   };
+};
+
+type ProctorEventDraft = {
+  eventType: string;
+  details?: string;
+  idleSeconds?: number;
 };
 
 export default function TestTakePage() {
@@ -43,7 +50,12 @@ export default function TestTakePage() {
   const [timeLeft, setTimeLeft] = useState<number | null>(null);
   const [showSubmitDialog, setShowSubmitDialog] = useState(false);
   const [lastSaved, setLastSaved] = useState<Date | null>(null);
+  const [hint, setHint] = useState<{ hint: string; focus?: string } | null>(null);
   const autoSaveRef = useRef<NodeJS.Timeout | null>(null);
+  const idleTimerRef = useRef<NodeJS.Timeout | null>(null);
+  const idleStartedAtRef = useRef<number | null>(null);
+  const proctorQueueRef = useRef<ProctorEventDraft[]>([]);
+  const draftStorageKey = attemptId ? `edutest-attempt-${attemptId}` : "";
 
   const { data: test, isLoading: testLoading } = useQuery<TestWithQuestions>({
     queryKey: ["/api/tests", id, "full"],
@@ -63,12 +75,22 @@ export default function TestTakePage() {
     },
   });
 
+  const proctorMutation = useMutation({
+    mutationFn: async (events: ProctorEventDraft[]) => {
+      if (!attemptId || events.length === 0) return;
+      await apiRequest("POST", `/api/attempts/${attemptId}/proctor-events`, { events });
+    },
+  });
+
   const submitMutation = useMutation({
     mutationFn: async () => {
       const response = await apiRequest("POST", `/api/attempts/${attemptId}/submit`, { answers });
       return response.json();
     },
     onSuccess: () => {
+      if (draftStorageKey) {
+        localStorage.removeItem(draftStorageKey);
+      }
       queryClient.invalidateQueries({ queryKey: ["/api/attempts/my"] });
       queryClient.invalidateQueries({ queryKey: ["/api/stats/student"] });
       toast({
@@ -86,14 +108,35 @@ export default function TestTakePage() {
     },
   });
 
+  const hintMutation = useMutation({
+    mutationFn: async () => {
+      const response = await apiRequest("POST", `/api/questions/${test?.questions[currentQuestionIndex].id}/hint`, { testId: id });
+      return response.json();
+    },
+    onSuccess: (data) => {
+      setHint(data);
+    },
+    onError: (error: any) => {
+      toast({ title: "Подсказка недоступна", description: error.message || "Не удалось получить подсказку", variant: "destructive" });
+    },
+  });
+
   useEffect(() => {
     if (attempt?.savedAnswers && Object.keys(answers).length === 0) {
       setAnswers(attempt.savedAnswers as SavedAnswers || {});
+      return;
     }
-  }, [attempt]);
+
+    if (draftStorageKey && Object.keys(answers).length === 0) {
+      const savedDraft = localStorage.getItem(draftStorageKey);
+      if (savedDraft) {
+        setAnswers(JSON.parse(savedDraft) as SavedAnswers);
+      }
+    }
+  }, [attempt, answers, draftStorageKey]);
 
   useEffect(() => {
-    if (test && attempt) {
+    if (test && attempt?.startedAt) {
       const startTime = new Date(attempt.startedAt).getTime();
       const endTime = startTime + test.timeLimitMinutes * 60 * 1000;
       const now = Date.now();
@@ -135,6 +178,96 @@ export default function TestTakePage() {
     };
   }, [answers]);
 
+  useEffect(() => {
+    if (draftStorageKey) {
+      localStorage.setItem(draftStorageKey, JSON.stringify(answers));
+    }
+  }, [answers, draftStorageKey]);
+
+  useEffect(() => {
+    setHint(null);
+  }, [currentQuestionIndex]);
+
+  const flushProctorEvents = useCallback(() => {
+    if (proctorQueueRef.current.length === 0 || !attemptId) {
+      return;
+    }
+
+    const pendingEvents = [...proctorQueueRef.current];
+    proctorQueueRef.current = [];
+    proctorMutation.mutate(pendingEvents);
+  }, [attemptId, proctorMutation]);
+
+  const queueProctorEvent = useCallback((event: ProctorEventDraft) => {
+    proctorQueueRef.current.push(event);
+    if (proctorQueueRef.current.length >= 5) {
+      flushProctorEvents();
+    }
+  }, [flushProctorEvents]);
+
+  useEffect(() => {
+    if (!attemptId) {
+      return;
+    }
+
+    const scheduleIdleTimer = () => {
+      if (idleTimerRef.current) {
+        clearTimeout(idleTimerRef.current);
+      }
+
+      idleStartedAtRef.current = Date.now();
+      idleTimerRef.current = setTimeout(() => {
+        const idleSeconds = idleStartedAtRef.current ? Math.max(60, Math.round((Date.now() - idleStartedAtRef.current) / 1000)) : 60;
+        queueProctorEvent({
+          eventType: "idle_pause",
+          details: "Пользователь не проявлял активность",
+          idleSeconds,
+        });
+      }, 60000);
+    };
+
+    const resetActivity = () => {
+      scheduleIdleTimer();
+    };
+
+    const handleVisibilityChange = () => {
+      queueProctorEvent({
+        eventType: document.hidden ? "visibility_hidden" : "visibility_visible",
+        details: document.hidden ? "Переход на другую вкладку" : "Возврат на вкладку теста",
+      });
+    };
+
+    const handleBlur = () => {
+      queueProctorEvent({ eventType: "window_blur", details: "Окно теста потеряло фокус" });
+    };
+
+    const handleFocus = () => {
+      queueProctorEvent({ eventType: "window_focus", details: "Фокус возвращен в окно теста" });
+      resetActivity();
+    };
+
+    const activityEvents: Array<keyof WindowEventMap> = ["mousemove", "keydown", "click", "scroll"];
+    document.addEventListener("visibilitychange", handleVisibilityChange);
+    window.addEventListener("blur", handleBlur);
+    window.addEventListener("focus", handleFocus);
+    activityEvents.forEach((eventName) => window.addEventListener(eventName, resetActivity));
+
+    scheduleIdleTimer();
+    const interval = setInterval(() => flushProctorEvents(), 20000);
+
+    return () => {
+      document.removeEventListener("visibilitychange", handleVisibilityChange);
+      window.removeEventListener("blur", handleBlur);
+      window.removeEventListener("focus", handleFocus);
+      activityEvents.forEach((eventName) => window.removeEventListener(eventName, resetActivity));
+      if (idleTimerRef.current) {
+        clearTimeout(idleTimerRef.current);
+      }
+      clearInterval(interval);
+      flushProctorEvents();
+    };
+  }, [attemptId, flushProctorEvents, queueProctorEvent]);
+
   const formatTime = (seconds: number) => {
     const mins = Math.floor(seconds / 60);
     const secs = seconds % 60;
@@ -148,12 +281,89 @@ export default function TestTakePage() {
     }));
   }, []);
 
+  const getQuestionDifficultyRank = useCallback((difficulty?: string | null) => {
+    switch (difficulty) {
+      case "hard":
+        return 2;
+      case "medium":
+        return 1;
+      default:
+        return 0;
+    }
+  }, []);
+
+  const isQuestionAnsweredCorrectly = useCallback((question: TestWithQuestions["questions"][number]) => {
+    const answer = answers[question.id];
+    if (!answer) {
+      return null;
+    }
+
+    if (question.type === "open_answer") {
+      return answer.text?.trim() ? null : false;
+    }
+
+    const selectedOptions = answer.selectedOptions || [];
+    if (selectedOptions.length === 0) {
+      return false;
+    }
+
+    const correctOptionIds = question.options.filter((option) => option.isCorrect).map((option) => option.id).sort();
+    const normalizedSelected = [...selectedOptions].sort();
+
+    if (correctOptionIds.length !== normalizedSelected.length) {
+      return false;
+    }
+
+    return correctOptionIds.every((optionId, index) => optionId === normalizedSelected[index]);
+  }, [answers]);
+
+  const findAdaptiveNextIndex = useCallback(() => {
+    if (!test?.questions.length) {
+      return currentQuestionIndex;
+    }
+
+    const current = test.questions[currentQuestionIndex];
+    const correctness = isQuestionAnsweredCorrectly(current);
+    const currentRank = getQuestionDifficultyRank(current.difficulty);
+    const unanswered = test.questions
+      .map((question, index) => ({ question, index }))
+      .filter(({ question }) => {
+        const answer = answers[question.id];
+        return !(answer?.text?.trim() || (answer?.selectedOptions && answer.selectedOptions.length > 0));
+      });
+
+    if (unanswered.length === 0) {
+      return currentQuestionIndex;
+    }
+
+    const targetRank = correctness === true ? Math.min(2, currentRank + 1) : correctness === false ? Math.max(0, currentRank - 1) : currentRank;
+    const prioritized = unanswered.find(({ question }) => getQuestionDifficultyRank(question.difficulty) === targetRank)
+      || unanswered.find(({ question }) => correctness === true ? getQuestionDifficultyRank(question.difficulty) > currentRank : getQuestionDifficultyRank(question.difficulty) < currentRank)
+      || unanswered[0];
+
+    return prioritized.index;
+  }, [answers, currentQuestionIndex, getQuestionDifficultyRank, isQuestionAnsweredCorrectly, test]);
+
+  const handleNextQuestion = useCallback(() => {
+    if (!test) {
+      return;
+    }
+
+    if (test.isAdaptive) {
+      setCurrentQuestionIndex(findAdaptiveNextIndex());
+      return;
+    }
+
+    setCurrentQuestionIndex((prev) => Math.min(test.questions.length - 1, prev + 1));
+  }, [findAdaptiveNextIndex, test]);
+
   const handleSubmit = () => {
     setShowSubmitDialog(true);
   };
 
   const confirmSubmit = () => {
     setShowSubmitDialog(false);
+    flushProctorEvents();
     submitMutation.mutate();
   };
 
@@ -205,6 +415,11 @@ export default function TestTakePage() {
                 )}
               </div>
               <div className="flex items-center gap-2">
+                {test.isAdaptive && <Badge variant="outline">Адаптивный режим</Badge>}
+                <Button variant="outline" size="sm" onClick={() => hintMutation.mutate()} disabled={hintMutation.isPending}>
+                  <Sparkles className="mr-2 h-4 w-4" />
+                  AI-подсказка
+                </Button>
                 <span className="text-sm text-muted-foreground">
                   {answeredCount} из {test.questions.length}
                 </span>
@@ -262,6 +477,19 @@ export default function TestTakePage() {
         </CardHeader>
         <CardContent className="space-y-6">
           <p className="text-lg" data-testid="text-question">{currentQuestion.text}</p>
+
+          <div className="flex flex-wrap gap-2">
+            {currentQuestion.topic && <Badge variant="outline">Тема: {currentQuestion.topic}</Badge>}
+            {currentQuestion.difficulty && <Badge variant="secondary">Сложность: {currentQuestion.difficulty}</Badge>}
+          </div>
+
+          {hint && (
+            <div className="rounded-lg border border-blue-200 bg-blue-50 p-4 text-sm text-blue-950">
+              <p className="font-medium">Подсказка</p>
+              <p className="mt-2">{hint.hint}</p>
+              {hint.focus && <p className="mt-2 text-blue-800">Фокус: {hint.focus}</p>}
+            </div>
+          )}
 
           {currentQuestion.imageUrl && (
             <div className="rounded-lg overflow-hidden border">
@@ -367,10 +595,10 @@ export default function TestTakePage() {
 
         {currentQuestionIndex < test.questions.length - 1 ? (
           <Button
-            onClick={() => setCurrentQuestionIndex((prev) => Math.min(test.questions.length - 1, prev + 1))}
+            onClick={handleNextQuestion}
             data-testid="button-next-question"
           >
-            Далее
+            {test.isAdaptive ? "Следующий вопрос" : "Далее"}
             <ChevronRight className="ml-2 h-4 w-4" />
           </Button>
         ) : (

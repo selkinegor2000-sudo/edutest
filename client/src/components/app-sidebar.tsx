@@ -24,6 +24,12 @@ import {
   BarChart2,
   TrendingUp,
   BrainCircuit,
+  LineChart,
+  Upload,
+  Bell,
+  MessageSquare,
+  Layers3,
+  Library,
 } from "lucide-react";
 
 export function AppSidebar() {
@@ -53,6 +59,21 @@ export function AppSidebar() {
       url: "/ai-analysis",
       icon: BrainCircuit,
     },
+    {
+      title: "Сообщения",
+      url: "/messages",
+      icon: MessageSquare,
+    },
+    {
+      title: "Уведомления",
+      url: "/notifications",
+      icon: Bell,
+    },
+    {
+      title: "Пособия",
+      url: "/materials",
+      icon: Library,
+    },
   ];
 
   const teacherMenuItems = [
@@ -67,9 +88,39 @@ export function AppSidebar() {
       icon: Users,
     },
     {
+      title: "Аналитика",
+      url: "/analytics",
+      icon: LineChart,
+    },
+    {
       title: "Создать тест",
       url: "/test/create",
       icon: Plus,
+    },
+    {
+      title: "Генерировать из файла",
+      url: "/test/generate",
+      icon: Upload,
+    },
+    {
+      title: "Органайзер",
+      url: "/teacher/organizer",
+      icon: Layers3,
+    },
+    {
+      title: "Сообщения",
+      url: "/messages",
+      icon: MessageSquare,
+    },
+    {
+      title: "Уведомления",
+      url: "/notifications",
+      icon: Bell,
+    },
+    {
+      title: "Пособия",
+      url: "/materials",
+      icon: Library,
     },
   ];
 

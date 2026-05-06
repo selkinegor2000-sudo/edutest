@@ -27,6 +27,12 @@ import ProfilePage from "@/pages/profile";
 import MyResultsPage from "@/pages/my-results";
 import MyProgressPage from "@/pages/my-progress";
 import AiAnalysisPage from "@/pages/ai-analysis";
+import TeacherAnalyticsPage from "@/pages/teacher-analytics";
+import TestGeneratePage from "@/pages/test-generate";
+import TeacherOrganizerPage from "@/pages/teacher-organizer";
+import MessagesPage from "@/pages/messages";
+import NotificationsPage from "@/pages/notifications";
+import MaterialsPage from "@/pages/materials";
 import NotFound from "@/pages/not-found";
 
 function ProtectedRoute({ children }: { children: React.ReactNode }) {
@@ -148,6 +154,13 @@ function Router() {
           </MainLayout>
         </ProtectedRoute>
       </Route>
+      <Route path="/analytics">
+        <ProtectedRoute>
+          <MainLayout>
+            <TeacherAnalyticsPage />
+          </MainLayout>
+        </ProtectedRoute>
+      </Route>
       <Route path="/my-results">
         <ProtectedRoute>
           <MainLayout>
@@ -169,6 +182,27 @@ function Router() {
           </MainLayout>
         </ProtectedRoute>
       </Route>
+      <Route path="/messages">
+        <ProtectedRoute>
+          <MainLayout>
+            <MessagesPage />
+          </MainLayout>
+        </ProtectedRoute>
+      </Route>
+      <Route path="/notifications">
+        <ProtectedRoute>
+          <MainLayout>
+            <NotificationsPage />
+          </MainLayout>
+        </ProtectedRoute>
+      </Route>
+      <Route path="/materials">
+        <ProtectedRoute>
+          <MainLayout>
+            <MaterialsPage />
+          </MainLayout>
+        </ProtectedRoute>
+      </Route>
       <Route path="/profile">
         <ProtectedRoute>
           <MainLayout>
@@ -180,6 +214,20 @@ function Router() {
         <ProtectedRoute>
           <MainLayout>
             <TestCreatePage />
+          </MainLayout>
+        </ProtectedRoute>
+      </Route>
+      <Route path="/test/generate">
+        <ProtectedRoute>
+          <MainLayout>
+            <TestGeneratePage />
+          </MainLayout>
+        </ProtectedRoute>
+      </Route>
+      <Route path="/teacher/organizer">
+        <ProtectedRoute>
+          <MainLayout>
+            <TeacherOrganizerPage />
           </MainLayout>
         </ProtectedRoute>
       </Route>
@@ -233,6 +281,12 @@ function Router() {
 }
 
 function App() {
+  useEffect(() => {
+    if ("serviceWorker" in navigator) {
+      navigator.serviceWorker.register("/sw.js").catch(() => undefined);
+    }
+  }, []);
+
   return (
     <QueryClientProvider client={queryClient}>
       <ThemeProvider defaultTheme="light" storageKey="edutest-theme">

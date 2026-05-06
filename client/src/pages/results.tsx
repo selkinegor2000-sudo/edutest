@@ -12,7 +12,6 @@ import {
   XCircle,
   MessageSquare,
   Clock,
-  Brain,
   Sparkles
 } from "lucide-react";
 import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Cell } from "recharts";
@@ -20,6 +19,13 @@ import { TestAttempt, Test, Answer, Question, QuestionOption } from "@shared/sch
 
 type FullAttempt = TestAttempt & {
   test: Test;
+  proctorEvents?: Array<{
+    id: string;
+    eventType: string;
+    details?: string | null;
+    idleSeconds?: number | null;
+    createdAt?: string | Date | null;
+  }>;
   answers: (Answer & {
     question: Question & { options: QuestionOption[] };
   })[];
@@ -73,6 +79,9 @@ export default function ResultsPage() {
     if (percent >= 60) return "bg-yellow-500/10";
     return "bg-red-500/10";
   };
+
+  const proctorScore = Number(attempt.proctorScore || 0);
+  const suspiciousEventsCount = Number(attempt.suspiciousEventsCount || 0);
 
   return (
     <div className="max-w-3xl mx-auto space-y-6">
@@ -139,12 +148,64 @@ export default function ResultsPage() {
             <Clock className="h-8 w-8 text-primary" />
             <div>
               <p className="font-medium">
-                {attempt.completedAt 
+                {attempt.completedAt && attempt.startedAt
                   ? Math.round((new Date(attempt.completedAt).getTime() - new Date(attempt.startedAt).getTime()) / 60000)
                   : "—"} мин
               </p>
               <p className="text-sm text-muted-foreground">Затрачено</p>
             </div>
+          </CardContent>
+        </Card>
+      </div>
+
+      <div className="grid gap-4 sm:grid-cols-2">
+        <Card>
+          <CardHeader>
+            <CardTitle>Прокторинг</CardTitle>
+            <CardDescription>Оценка достоверности прохождения</CardDescription>
+          </CardHeader>
+          <CardContent className="space-y-4">
+            <div>
+              <div className="flex items-center justify-between text-sm mb-2">
+                <span>Индекс доверия</span>
+                <span className="font-medium">{proctorScore}%</span>
+              </div>
+              <Progress value={proctorScore} className="h-2" />
+            </div>
+            <div className="flex items-center justify-between rounded-lg border p-3 text-sm">
+              <span>Подозрительных событий</span>
+              <Badge variant={suspiciousEventsCount > 0 ? "destructive" : "secondary"}>{suspiciousEventsCount}</Badge>
+            </div>
+            <div className="rounded-lg bg-muted/40 p-3 text-sm text-muted-foreground">
+              {attempt.proctorSummary || "Данные прокторинга отсутствуют"}
+            </div>
+          </CardContent>
+        </Card>
+
+        <Card>
+          <CardHeader>
+            <CardTitle>Таймлайн действий</CardTitle>
+            <CardDescription>События, зафиксированные во время прохождения</CardDescription>
+          </CardHeader>
+          <CardContent>
+            {attempt.proctorEvents && attempt.proctorEvents.length > 0 ? (
+              <div className="space-y-3">
+                {attempt.proctorEvents.map((event) => (
+                  <div key={event.id} className="rounded-lg border p-3 text-sm">
+                    <div className="flex items-center justify-between gap-3">
+                      <span className="font-medium">{event.eventType}</span>
+                      <span className="text-xs text-muted-foreground">
+                        {event.createdAt ? new Date(event.createdAt).toLocaleTimeString("ru-RU") : "без времени"}
+                      </span>
+                    </div>
+                    {event.details && <p className="mt-1 text-muted-foreground">{event.details}</p>}
+                    {event.idleSeconds ? <p className="mt-1 text-muted-foreground">Пауза: {event.idleSeconds} сек.</p> : null}
+                  </div>
+                ))}
+              </div>
+            ) : (
+              <p className="text-sm text-muted-foreground">События прокторинга не зафиксированы</p>
+            )}
           </CardContent>
         </Card>
       </div>
@@ -252,14 +313,6 @@ export default function ResultsPage() {
           ))}
         </CardContent>
       </Card>
-
-      <div className="flex justify-center">
-        <Link href="/">
-          <Button size="lg" data-testid="button-back-to-dashboard">
-            Вернуться на главную
-          </Button>
-        </Link>
-      </div>
 
       {testResults && testResults.attempts && testResults.attempts.length > 1 && (() => {
         const completed = testResults.attempts.filter((a: any) => a.status === "completed");

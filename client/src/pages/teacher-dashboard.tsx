@@ -18,7 +18,9 @@ import {
   Edit,
   Trash2,
   Download,
-  FileSpreadsheet
+  FileSpreadsheet,
+  Layers3,
+  MessageSquare,
 } from "lucide-react";
 import {
   DropdownMenu,
@@ -115,6 +117,20 @@ export default function TeacherDashboard() {
             Создать тест
           </Button>
         </Link>
+        <div className="flex gap-2">
+          <Link href="/teacher/organizer">
+            <Button variant="outline">
+              <Layers3 className="mr-2 h-4 w-4" />
+              Органайзер
+            </Button>
+          </Link>
+          <Link href="/messages">
+            <Button variant="outline">
+              <MessageSquare className="mr-2 h-4 w-4" />
+              Сообщения
+            </Button>
+          </Link>
+        </div>
       </div>
 
       <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-4">
@@ -513,6 +529,16 @@ export default function TeacherDashboard() {
                           >
                             <FileText className="mr-2 h-4 w-4" />
                             Экспорт в PDF
+                          </a>
+                        </DropdownMenuItem>
+                        <DropdownMenuItem asChild>
+                          <a 
+                            href={`/api/export/test/${test.id}/csv`} 
+                            download
+                            data-testid={`button-export-csv-${test.id}`}
+                          >
+                            <FileSpreadsheet className="mr-2 h-4 w-4" />
+                            Экспорт в CSV
                           </a>
                         </DropdownMenuItem>
                       </DropdownMenuContent>

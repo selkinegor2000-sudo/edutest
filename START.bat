@@ -27,10 +27,12 @@ if not exist ".env" (
     echo  [!] Файл .env не найден. Создаю из шаблона...
     (
         echo SESSION_SECRET=edutest_secret_key_change_in_production_2024
-        echo GROQ_API_KEY=
+        echo AI_API_KEY=
+        echo AI_BASE_URL=https://api.groq.com/openai/v1
+        echo AI_MODEL=llama-3.3-70b-versatile
         echo PORT=3333
     ) > .env
-    echo  [!] Заполните GROQ_API_KEY в файле .env и запустите снова.
+    echo  [!] Заполните AI_API_KEY в файле .env и запустите снова.
     pause
     exit /b 1
 )
