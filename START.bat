@@ -30,11 +30,27 @@ if not exist ".env" (
         echo AI_API_KEY=
         echo AI_BASE_URL=https://api.groq.com/openai/v1
         echo AI_MODEL=llama-3.3-70b-versatile
+        echo ADMIN_PANEL_LOGIN=admin
+        echo ADMIN_PANEL_PASSWORD=Admin12345!
         echo PORT=3333
     ) > .env
     echo  [!] Заполните AI_API_KEY в файле .env и запустите снова.
     pause
     exit /b 1
+)
+
+set "PORT=3333"
+set "LISTEN_PID="
+for /f "tokens=5" %%P in ('netstat -ano -p tcp ^| findstr /R /C:":%PORT% .*LISTENING"') do set "LISTEN_PID=%%P"
+
+if defined LISTEN_PID (
+    echo  [!] Порт %PORT% уже занят. Останавливаю процесс %LISTEN_PID%...
+    taskkill /PID %LISTEN_PID% /F > nul 2>&1
+    if errorlevel 1 (
+        echo  [ОШИБКА] Не удалось освободить порт %PORT%.
+        pause
+        exit /b 1
+    )
 )
 
 echo  Запускаю сервер...

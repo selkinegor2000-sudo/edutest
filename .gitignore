@@ -9,4 +9,6 @@ vite.config.ts.*
 .env
 data/
 test_gemini.py
+test_gatellm.py
+edutest.db
 *.docx

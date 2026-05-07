@@ -12,26 +12,69 @@ import { extractTextFromFile, cleanText } from "./document-parser";
 import multer from "multer";
 import * as path from "path";
 import * as fs from "fs";
+import { rebuildDemoContour } from "./demo-seed";
 
 declare module "express-session" {
   interface SessionData {
     userId: string;
+    adminAuthenticated?: boolean;
+    adminLogin?: string;
   }
 }
 
 const AI_API_KEY = process.env.AI_API_KEY || "";
 const AI_BASE_URL = process.env.AI_BASE_URL || "https://openrouter.ai/api/v1";
 const AI_MODEL = process.env.AI_MODEL || "";
+const ADMIN_PANEL_LOGIN = process.env.ADMIN_PANEL_LOGIN || "admin";
+const ADMIN_PANEL_PASSWORD = process.env.ADMIN_PANEL_PASSWORD || "Admin12345!";
+const ADMIN_PANEL_PASSWORD_HASH = process.env.ADMIN_PANEL_PASSWORD_HASH || "";
 const AI_MODEL_CANDIDATES = (process.env.AI_MODEL_CANDIDATES || "")
   .split(",")
   .map((item) => item.trim())
   .filter(Boolean);
 const YANDEX_API_KEY = process.env.YANDEX_API_KEY || "";
 
+type AdminAuditStatus = "success" | "warning" | "error" | "info";
+type AdminHealthStatus = "ok" | "warning" | "error";
+type AdminReadinessStatus = "ready" | "attention" | "critical";
+
+type AdminAuditLogEntry = {
+  id: string;
+  timestamp: string;
+  adminLogin: string;
+  action: string;
+  target: string | null;
+  status: AdminAuditStatus;
+  details: Record<string, unknown>;
+  ip: string | null;
+  userAgent: string | null;
+};
+
+type AdminHealthCheck = {
+  key: string;
+  title: string;
+  status: AdminHealthStatus;
+  message: string;
+  details?: string;
+  responseTimeMs?: number | null;
+};
+
+type AdminReadinessItem = {
+  key: string;
+  title: string;
+  status: AdminReadinessStatus;
+  message: string;
+};
+
 // Multer configuration для загрузки файлов
 const uploadDir = "./uploads";
+const appDataDir = path.resolve("./data");
+const adminAuditLogPath = path.join(appDataDir, "admin-audit-log.jsonl");
 if (!fs.existsSync(uploadDir)) {
   fs.mkdirSync(uploadDir, { recursive: true });
+}
+if (!fs.existsSync(appDataDir)) {
+  fs.mkdirSync(appDataDir, { recursive: true });
 }
 
 const uploadStorage = multer.diskStorage({
@@ -139,6 +182,22 @@ const aiAnalysisRequestSchema = z.object({
   model: z.string().min(1).optional(),
 });
 
+const adminLoginSchema = z.object({
+  login: z.string().min(3, "Логин администратора должен содержать минимум 3 символа"),
+  password: z.string().min(6, "Пароль администратора должен содержать минимум 6 символов"),
+});
+
+const adminAuditEventSchema = z.object({
+  action: z.string().min(2, "Не указано действие"),
+  target: z.string().max(200).optional().nullable(),
+  status: z.enum(["success", "warning", "error", "info"]).optional().default("info"),
+  details: z.record(z.unknown()).optional().default({}),
+});
+
+const adminDemoResetSchema = z.object({
+  resetAuditLog: z.boolean().optional().default(true),
+});
+
 const groupReportQuerySchema = z.object({
   from: z.string().optional(),
   to: z.string().optional(),
@@ -161,6 +220,326 @@ let aiModelsCache: { fetchedAt: number; models: string[] } = { fetchedAt: 0, mod
 
 function buildUserLabel(user: any) {
   return user?.fullName || user?.username || "Неизвестный пользователь";
+}
+
+function getClientIp(req?: Request) {
+  if (!req) return null;
+
+  const forwarded = req.headers["x-forwarded-for"];
+  if (typeof forwarded === "string") {
+    return forwarded.split(",")[0].trim();
+  }
+
+  if (Array.isArray(forwarded) && forwarded[0]) {
+    return forwarded[0];
+  }
+
+  return req.socket.remoteAddress || null;
+}
+
+function appendAdminAuditLogEntry(params: {
+  adminLogin: string;
+  action: string;
+  req?: Request;
+  target?: string | null;
+  status?: AdminAuditStatus;
+  details?: Record<string, unknown>;
+}) {
+  const entry: AdminAuditLogEntry = {
+    id: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+    timestamp: new Date().toISOString(),
+    adminLogin: params.adminLogin,
+    action: params.action,
+    target: params.target ?? null,
+    status: params.status ?? "info",
+    details: params.details ?? {},
+    ip: getClientIp(params.req),
+    userAgent: params.req?.headers["user-agent"] || null,
+  };
+
+  fs.appendFileSync(adminAuditLogPath, `${JSON.stringify(entry)}\n`, "utf-8");
+  return entry;
+}
+
+function readAdminAuditLogEntries(limit = 25): AdminAuditLogEntry[] {
+  if (!fs.existsSync(adminAuditLogPath)) {
+    return [];
+  }
+
+  const lines = fs.readFileSync(adminAuditLogPath, "utf-8")
+    .split(/\r?\n/)
+    .filter(Boolean)
+    .slice(-limit)
+    .reverse();
+
+  return lines.flatMap((line) => {
+    try {
+      return [JSON.parse(line) as AdminAuditLogEntry];
+    } catch {
+      return [];
+    }
+  });
+}
+
+function resolvePdfFontPath() {
+  const candidates = [
+    path.join(process.env.WINDIR || "C:\\Windows", "Fonts", "arial.ttf"),
+    "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+    "/usr/share/fonts/truetype/liberation2/LiberationSans-Regular.ttf",
+  ];
+
+  return candidates.find((candidate) => fs.existsSync(candidate));
+}
+
+function applyReadablePdfFont(doc: any) {
+  const fontPath = resolvePdfFontPath();
+  if (fontPath) {
+    doc.font(fontPath);
+  }
+}
+
+function buildAdminSummaryRows(summary: any) {
+  return [
+    { "Показатель": "Всего пользователей", "Значение": summary.usersTotal },
+    { "Показатель": "Преподаватели", "Значение": summary.teachers },
+    { "Показатель": "Студенты", "Значение": summary.students },
+    { "Показатель": "Тесты", "Значение": summary.testsTotal },
+    { "Показатель": "Вопросы", "Значение": summary.questionsTotal },
+    { "Показатель": "Попытки", "Значение": summary.attemptsTotal },
+    { "Показатель": "Завершенные попытки", "Значение": summary.completedAttempts },
+    { "Показатель": "Материалы", "Значение": summary.materialsTotal },
+    { "Показатель": "Сообщения", "Значение": summary.messagesTotal },
+    { "Показатель": "Уведомления", "Значение": summary.notificationsTotal },
+    { "Показатель": "Группы", "Значение": summary.groupsTotal },
+    { "Показатель": "Назначения", "Значение": summary.assignmentsTotal },
+    { "Показатель": "Сформировано", "Значение": new Date(summary.generatedAt).toLocaleString("ru-RU") },
+  ];
+}
+
+async function buildAdminSystemHealth() {
+  const checks: AdminHealthCheck[] = [];
+
+  const dbStartedAt = Date.now();
+  try {
+    await storage.getAdminSystemSummary();
+    checks.push({
+      key: "database",
+      title: "База данных",
+      status: "ok",
+      message: "Сводные данные читаются без ошибок.",
+      responseTimeMs: Date.now() - dbStartedAt,
+    });
+  } catch (error) {
+    checks.push({
+      key: "database",
+      title: "База данных",
+      status: "error",
+      message: "Не удалось получить системную сводку.",
+      details: error instanceof Error ? error.message : "Неизвестная ошибка",
+      responseTimeMs: Date.now() - dbStartedAt,
+    });
+  }
+
+  const configuredModels = uniqueNonEmptyModels([AI_MODEL, ...AI_MODEL_CANDIDATES]);
+  if (!AI_API_KEY) {
+    checks.push({
+      key: "ai-provider",
+      title: "AI-провайдер",
+      status: "warning",
+      message: "AI_API_KEY не задан. Нужен fallback или ручной сценарий показа.",
+      details: configuredModels.length > 0 ? `Настроенные модели: ${configuredModels.join(", ")}` : "Модели не указаны.",
+    });
+  } else {
+    const aiStartedAt = Date.now();
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 4000);
+
+    try {
+      const modelsUrl = new URL("models", AI_BASE_URL.endsWith("/") ? AI_BASE_URL : `${AI_BASE_URL}/`);
+      const headers: Record<string, string> = {
+        Authorization: `Bearer ${AI_API_KEY}`,
+      };
+
+      if (AI_BASE_URL.includes("openrouter.ai")) {
+        headers["HTTP-Referer"] = "http://localhost:3333";
+        headers["X-Title"] = "EduTest";
+      }
+
+      const response = await fetch(modelsUrl.toString(), {
+        method: "GET",
+        headers,
+        signal: controller.signal,
+      });
+
+      const responseTimeMs = Date.now() - aiStartedAt;
+      if (!response.ok) {
+        checks.push({
+          key: "ai-provider",
+          title: "AI-провайдер",
+          status: "warning",
+          message: `Провайдер ответил кодом ${response.status}.`,
+          details: `Базовый URL: ${AI_BASE_URL}`,
+          responseTimeMs,
+        });
+      } else {
+        checks.push({
+          key: "ai-provider",
+          title: "AI-провайдер",
+          status: "ok",
+          message: `Провайдер доступен, настроено моделей: ${configuredModels.length || 1}.`,
+          details: `Базовый URL: ${AI_BASE_URL}`,
+          responseTimeMs,
+        });
+      }
+    } catch (error) {
+      checks.push({
+        key: "ai-provider",
+        title: "AI-провайдер",
+        status: "warning",
+        message: "Не удалось подтвердить доступность AI-провайдера в рамках быстрой проверки.",
+        details: error instanceof Error ? error.message : "Неизвестная ошибка",
+        responseTimeMs: Date.now() - aiStartedAt,
+      });
+    } finally {
+      clearTimeout(timeout);
+    }
+  }
+
+  const requiredArtifacts = [
+    path.resolve("public", "admin-guide-print.html"),
+    path.resolve("public", "EduTest_Admin_Guide.docx"),
+    path.resolve("docs", "EduTest_Admin_Guide.docx"),
+  ];
+  const missingArtifacts = requiredArtifacts.filter((artifactPath) => !fs.existsSync(artifactPath));
+  checks.push({
+    key: "documents",
+    title: "Печатные материалы",
+    status: missingArtifacts.length === 0 ? "ok" : "warning",
+    message: missingArtifacts.length === 0
+      ? "HTML и Word-материалы доступны для печати и передачи."
+      : "Часть печатных артефактов отсутствует.",
+    details: missingArtifacts.length === 0
+      ? "public/admin-guide-print.html, public/EduTest_Admin_Guide.docx, docs/EduTest_Admin_Guide.docx"
+      : missingArtifacts.join("; "),
+  });
+
+  try {
+    fs.appendFileSync(adminAuditLogPath, "", "utf-8");
+    checks.push({
+      key: "audit-log",
+      title: "Журнал администратора",
+      status: "ok",
+      message: "Файл журнала доступен для записи.",
+      details: adminAuditLogPath,
+    });
+  } catch (error) {
+    checks.push({
+      key: "audit-log",
+      title: "Журнал администратора",
+      status: "error",
+      message: "Не удалось открыть журнал администратора для записи.",
+      details: error instanceof Error ? error.message : "Неизвестная ошибка",
+    });
+  }
+
+  checks.push({
+    key: "admin-access",
+    title: "Административный доступ",
+    status: ADMIN_PANEL_LOGIN && (ADMIN_PANEL_PASSWORD_HASH || ADMIN_PANEL_PASSWORD) ? "ok" : "error",
+    message: ADMIN_PANEL_LOGIN && (ADMIN_PANEL_PASSWORD_HASH || ADMIN_PANEL_PASSWORD)
+      ? `Отдельный контур настроен для логина ${ADMIN_PANEL_LOGIN}.`
+      : "Не настроены отдельные учетные данные администратора.",
+  });
+
+  const overallStatus: AdminHealthStatus = checks.some((check) => check.status === "error")
+    ? "error"
+    : checks.some((check) => check.status === "warning")
+      ? "warning"
+      : "ok";
+
+  return {
+    overallStatus,
+    generatedAt: new Date().toISOString(),
+    checks,
+  };
+}
+
+async function buildAdminReadinessReport() {
+  const summary = await storage.getAdminSystemSummary();
+  const printArtifactsReady = fs.existsSync(path.resolve("public", "admin-guide-print.html"))
+    && fs.existsSync(path.resolve("public", "EduTest_Admin_Guide.docx"));
+
+  const items: AdminReadinessItem[] = [
+    {
+      key: "admin-access",
+      title: "Отдельный административный вход",
+      status: ADMIN_PANEL_LOGIN && (ADMIN_PANEL_PASSWORD_HASH || ADMIN_PANEL_PASSWORD) ? "ready" : "critical",
+      message: ADMIN_PANEL_LOGIN && (ADMIN_PANEL_PASSWORD_HASH || ADMIN_PANEL_PASSWORD)
+        ? "Административный контур выделен и готов к использованию."
+        : "Не заданы отдельные реквизиты администратора.",
+    },
+    {
+      key: "roles",
+      title: "Ролевое покрытие демонстрации",
+      status: summary.teachers > 0 && summary.students > 0 ? "ready" : "attention",
+      message: summary.teachers > 0 && summary.students > 0
+        ? `Доступны обе ключевые роли: преподаватели (${summary.teachers}) и студенты (${summary.students}).`
+        : "Для полноценного показа желательно иметь и преподавателей, и студентов.",
+    },
+    {
+      key: "content",
+      title: "Учебный контент",
+      status: summary.testsTotal > 0 && summary.questionsTotal > 0 ? "ready" : "attention",
+      message: summary.testsTotal > 0 && summary.questionsTotal > 0
+        ? `Контур наполнен: ${summary.testsTotal} тестов и ${summary.questionsTotal} вопросов.`
+        : "Не хватает тестов или вопросов для убедительной демонстрации.",
+    },
+    {
+      key: "attempts",
+      title: "История прохождения",
+      status: summary.completedAttempts > 0 ? "ready" : "attention",
+      message: summary.completedAttempts > 0
+        ? `Есть завершенные попытки: ${summary.completedAttempts} из ${summary.attemptsTotal}.`
+        : "Желательно подготовить хотя бы одну завершенную попытку для показа результатов.",
+    },
+    {
+      key: "communications",
+      title: "Коммуникации и оргконтур",
+      status: (summary.messagesTotal + summary.notificationsTotal) > 0 ? "ready" : "attention",
+      message: (summary.messagesTotal + summary.notificationsTotal) > 0
+        ? `Зафиксировано ${summary.messagesTotal + summary.notificationsTotal} коммуникационных событий.`
+        : "Стоит наполнить контур сообщениями и уведомлениями.",
+    },
+    {
+      key: "print-artifacts",
+      title: "Печатные артефакты",
+      status: printArtifactsReady ? "ready" : "critical",
+      message: printArtifactsReady
+        ? "HTML- и DOCX-материалы доступны для печати и передачи."
+        : "Не все печатные материалы сформированы.",
+    },
+    {
+      key: "ai-readiness",
+      title: "AI-контур",
+      status: AI_API_KEY ? "ready" : "attention",
+      message: AI_API_KEY
+        ? `AI-провайдер настроен, базовый URL: ${AI_BASE_URL}.`
+        : "AI-провайдер не настроен, рекомендуется показывать fallback-сценарий.",
+    },
+  ];
+
+  const readyCount = items.filter((item) => item.status === "ready").length;
+  const attentionCount = items.filter((item) => item.status === "attention").length;
+  const criticalCount = items.filter((item) => item.status === "critical").length;
+
+  return {
+    generatedAt: new Date().toISOString(),
+    overallStatus: criticalCount > 0 ? "critical" : attentionCount > 0 ? "attention" : "ready",
+    readyCount,
+    attentionCount,
+    criticalCount,
+    items,
+  };
 }
 
 function uniqueNonEmptyModels(models: Array<string | undefined | null>) {
@@ -205,6 +584,14 @@ function htmlToText(html: string) {
     .replace(/<[^>]+>/g, " ")
     .replace(/\s+/g, " ")
     .trim();
+}
+
+async function validateAdminPassword(password: string) {
+  if (ADMIN_PANEL_PASSWORD_HASH) {
+    return bcrypt.compare(password, ADMIN_PANEL_PASSWORD_HASH);
+  }
+
+  return password === ADMIN_PANEL_PASSWORD;
 }
 
 function isDisallowedHost(hostname: string) {
@@ -561,6 +948,14 @@ function requireAuth(req: Request, res: Response, next: NextFunction) {
   next();
 }
 
+function requireAdmin(req: Request, res: Response, next: NextFunction) {
+  if (!req.session.adminAuthenticated) {
+    return res.status(401).json({ message: "Необходима авторизация администратора" });
+  }
+
+  next();
+}
+
 async function requireTeacher(req: Request, res: Response, next: NextFunction) {
   if (!req.session.userId) {
     return res.status(401).json({ message: "Необходима авторизация" });
@@ -595,6 +990,312 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     const { password, ...safeUser } = user;
     return safeUser;
   }
+
+  app.post("/api/admin/login", async (req, res) => {
+    try {
+      const data = adminLoginSchema.parse(req.body);
+
+      if (data.login !== ADMIN_PANEL_LOGIN) {
+        appendAdminAuditLogEntry({
+          adminLogin: data.login,
+          action: "login_failed",
+          req,
+          target: "admin-panel",
+          status: "error",
+          details: { reason: "invalid_login" },
+        });
+        return res.status(400).json({ message: "Неверный логин или пароль администратора" });
+      }
+
+      const validPassword = await validateAdminPassword(data.password);
+      if (!validPassword) {
+        appendAdminAuditLogEntry({
+          adminLogin: data.login,
+          action: "login_failed",
+          req,
+          target: "admin-panel",
+          status: "error",
+          details: { reason: "invalid_password" },
+        });
+        return res.status(400).json({ message: "Неверный логин или пароль администратора" });
+      }
+
+      req.session.adminAuthenticated = true;
+      req.session.adminLogin = ADMIN_PANEL_LOGIN;
+      appendAdminAuditLogEntry({
+        adminLogin: ADMIN_PANEL_LOGIN,
+        action: "login_success",
+        req,
+        target: "admin-panel",
+        status: "success",
+      });
+
+      res.json({
+        login: ADMIN_PANEL_LOGIN,
+        title: "Администратор контура",
+        panelUrl: "/admin-panel",
+      });
+    } catch (error) {
+      if (error instanceof z.ZodError) {
+        return res.status(400).json({ message: error.errors[0].message });
+      }
+      console.error("Admin login error:", error);
+      res.status(500).json({ message: "Ошибка входа в админ-панель" });
+    }
+  });
+
+  app.post("/api/admin/logout", (req, res) => {
+    const adminLogin = req.session.adminLogin || ADMIN_PANEL_LOGIN;
+    appendAdminAuditLogEntry({
+      adminLogin,
+      action: "logout",
+      req,
+      target: "admin-panel",
+      status: "success",
+    });
+    req.session.adminAuthenticated = false;
+    delete req.session.adminLogin;
+    res.json({ message: "Вы вышли из админ-панели" });
+  });
+
+  app.get("/api/admin/me", requireAdmin, (req, res) => {
+    res.json({
+      login: req.session.adminLogin || ADMIN_PANEL_LOGIN,
+      title: "Администратор контура",
+      panelUrl: "/admin-panel",
+      printGuideUrl: "/admin-guide-print.html",
+      wordGuideUrl: "/EduTest_Admin_Guide.docx",
+    });
+  });
+
+  app.get("/api/admin/system-summary", requireAdmin, async (_req, res) => {
+    try {
+      const summary = await storage.getAdminSystemSummary();
+      res.json(summary);
+    } catch (error) {
+      console.error("Admin system summary error:", error);
+      res.status(500).json({ message: "Ошибка получения сводных показателей системы" });
+    }
+  });
+
+  app.get("/api/admin/system-health", requireAdmin, async (_req, res) => {
+    try {
+      const health = await buildAdminSystemHealth();
+      res.json(health);
+    } catch (error) {
+      console.error("Admin system health error:", error);
+      res.status(500).json({ message: "Ошибка получения статуса сервиса" });
+    }
+  });
+
+  app.get("/api/admin/readiness-report", requireAdmin, async (_req, res) => {
+    try {
+      const report = await buildAdminReadinessReport();
+      res.json(report);
+    } catch (error) {
+      console.error("Admin readiness report error:", error);
+      res.status(500).json({ message: "Ошибка формирования отчета готовности" });
+    }
+  });
+
+  app.get("/api/admin/audit-log", requireAdmin, (req, res) => {
+    const requestedLimit = Number(req.query.limit ?? 25);
+    const limit = Number.isFinite(requestedLimit) ? Math.max(1, Math.min(100, requestedLimit)) : 25;
+    res.json({ items: readAdminAuditLogEntries(limit) });
+  });
+
+  app.post("/api/admin/audit-log", requireAdmin, (req, res) => {
+    try {
+      const data = adminAuditEventSchema.parse(req.body);
+      const entry = appendAdminAuditLogEntry({
+        adminLogin: req.session.adminLogin || ADMIN_PANEL_LOGIN,
+        action: data.action,
+        req,
+        target: data.target ?? null,
+        status: data.status,
+        details: data.details,
+      });
+      res.status(201).json(entry);
+    } catch (error) {
+      if (error instanceof z.ZodError) {
+        return res.status(400).json({ message: error.errors[0].message });
+      }
+
+      console.error("Admin audit log error:", error);
+      res.status(500).json({ message: "Ошибка записи административного журнала" });
+    }
+  });
+
+  app.post("/api/admin/demo-reset", requireAdmin, async (req, res) => {
+    try {
+      const data = adminDemoResetSchema.parse(req.body || {});
+      const result = await rebuildDemoContour();
+
+      if (data.resetAuditLog) {
+        fs.writeFileSync(adminAuditLogPath, "", "utf-8");
+      }
+
+      const entry = appendAdminAuditLogEntry({
+        adminLogin: req.session.adminLogin || ADMIN_PANEL_LOGIN,
+        action: "demo_reset",
+        req,
+        target: "demo-contour",
+        status: "success",
+        details: result,
+      });
+
+      res.json({
+        message: "Демо-контур восстановлен",
+        ...result,
+        loggedActionId: entry.id,
+      });
+    } catch (error) {
+      if (error instanceof z.ZodError) {
+        return res.status(400).json({ message: error.errors[0].message });
+      }
+
+      console.error("Admin demo reset error:", error);
+      res.status(500).json({ message: "Ошибка восстановления демо-контура" });
+    }
+  });
+
+  app.get("/api/admin/export/summary/excel", requireAdmin, async (req, res) => {
+    try {
+      const summary = await storage.getAdminSystemSummary();
+      const health = await buildAdminSystemHealth();
+      const readiness = await buildAdminReadinessReport();
+
+      const workbook = XLSX.utils.book_new();
+      XLSX.utils.book_append_sheet(workbook, XLSX.utils.json_to_sheet(buildAdminSummaryRows(summary)), "Сводка");
+      XLSX.utils.book_append_sheet(
+        workbook,
+        XLSX.utils.json_to_sheet(
+          health.checks.map((check) => ({
+            "Компонент": check.title,
+            "Статус": check.status,
+            "Сообщение": check.message,
+            "Детали": check.details || "",
+            "Время ответа, мс": check.responseTimeMs ?? "",
+          }))
+        ),
+        "Мониторинг"
+      );
+      XLSX.utils.book_append_sheet(
+        workbook,
+        XLSX.utils.json_to_sheet(
+          readiness.items.map((item) => ({
+            "Проверка": item.title,
+            "Статус": item.status,
+            "Комментарий": item.message,
+          }))
+        ),
+        "Готовность"
+      );
+      XLSX.utils.book_append_sheet(
+        workbook,
+        XLSX.utils.json_to_sheet(
+          readAdminAuditLogEntries(25).map((entry) => ({
+            "Время": new Date(entry.timestamp).toLocaleString("ru-RU"),
+            "Логин": entry.adminLogin,
+            "Действие": entry.action,
+            "Цель": entry.target || "",
+            "Статус": entry.status,
+          }))
+        ),
+        "Журнал"
+      );
+
+      const buffer = XLSX.write(workbook, { type: "buffer", bookType: "xlsx" });
+      appendAdminAuditLogEntry({
+        adminLogin: req.session.adminLogin || ADMIN_PANEL_LOGIN,
+        action: "export_summary_excel",
+        req,
+        target: "admin-summary-excel",
+        status: "success",
+        details: { overallHealth: health.overallStatus, overallReadiness: readiness.overallStatus },
+      });
+
+      res.setHeader("Content-Type", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");
+      res.setHeader("Content-Disposition", "attachment; filename=admin_summary_report.xlsx");
+      res.send(buffer);
+    } catch (error) {
+      console.error("Admin Excel export error:", error);
+      res.status(500).json({ message: "Ошибка экспорта административной сводки в Excel" });
+    }
+  });
+
+  app.get("/api/admin/export/summary/pdf", requireAdmin, async (req, res) => {
+    try {
+      const summary = await storage.getAdminSystemSummary();
+      const health = await buildAdminSystemHealth();
+      const readiness = await buildAdminReadinessReport();
+
+      const doc = new PDFDocument({ margin: 40, size: "A4" });
+      applyReadablePdfFont(doc);
+
+      res.setHeader("Content-Type", "application/pdf");
+      res.setHeader("Content-Disposition", "attachment; filename=admin_summary_report.pdf");
+      doc.pipe(res);
+
+      doc.fontSize(18).text("Административная сводка EduTest", { align: "center" });
+      doc.moveDown(0.5);
+      doc.fontSize(10).text(`Дата формирования: ${new Date().toLocaleString("ru-RU")}`);
+      doc.text(`Администратор: ${req.session.adminLogin || ADMIN_PANEL_LOGIN}`);
+      doc.text(`Общая готовность: ${readiness.overallStatus}`);
+      doc.text(`Общий статус сервиса: ${health.overallStatus}`);
+      doc.moveDown();
+
+      doc.fontSize(14).text("1. Ключевые показатели", { underline: true });
+      doc.moveDown(0.5);
+      buildAdminSummaryRows(summary).forEach((row: Record<string, unknown>) => {
+        doc.fontSize(10).text(`${row["Показатель"]}: ${row["Значение"]}`);
+      });
+      doc.moveDown();
+
+      doc.fontSize(14).text("2. Мониторинг сервиса", { underline: true });
+      doc.moveDown(0.5);
+      health.checks.forEach((check) => {
+        doc.fontSize(10).text(`• ${check.title}: ${check.status} — ${check.message}`);
+        if (check.details) {
+          doc.fontSize(9).fillColor("#475569").text(`  ${check.details}`);
+          doc.fillColor("black");
+        }
+      });
+      doc.moveDown();
+
+      doc.fontSize(14).text("3. Автопроверка готовности", { underline: true });
+      doc.moveDown(0.5);
+      readiness.items.forEach((item) => {
+        doc.fontSize(10).text(`• ${item.title}: ${item.status} — ${item.message}`);
+      });
+      doc.moveDown();
+
+      doc.fontSize(14).text("4. Последние действия администратора", { underline: true });
+      doc.moveDown(0.5);
+      const auditEntries = readAdminAuditLogEntries(10);
+      if (auditEntries.length === 0) {
+        doc.fontSize(10).text("Журнал пока пуст.");
+      } else {
+        auditEntries.forEach((entry) => {
+          doc.fontSize(10).text(`• ${new Date(entry.timestamp).toLocaleString("ru-RU")} — ${entry.action} (${entry.status})`);
+        });
+      }
+
+      appendAdminAuditLogEntry({
+        adminLogin: req.session.adminLogin || ADMIN_PANEL_LOGIN,
+        action: "export_summary_pdf",
+        req,
+        target: "admin-summary-pdf",
+        status: "success",
+        details: { overallHealth: health.overallStatus, overallReadiness: readiness.overallStatus },
+      });
+
+      doc.end();
+    } catch (error) {
+      console.error("Admin PDF export error:", error);
+      res.status(500).json({ message: "Ошибка экспорта административной сводки в PDF" });
+    }
+  });
 
   app.post("/api/auth/register", async (req, res) => {
     try {

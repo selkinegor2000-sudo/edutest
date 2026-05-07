@@ -43,7 +43,7 @@ import {
   type InsertProctorEvent,
 } from "@shared/schema";
 import { db } from "./db";
-import { eq, and, desc, inArray } from "drizzle-orm";
+import { eq, and, desc, inArray, sql } from "drizzle-orm";
 
 function toStringArray(value: unknown): string[] | null | undefined {
   if (value === undefined) {
@@ -127,6 +127,7 @@ export interface IStorage {
   createProctorEvents(events: InsertProctorEvent[]): Promise<ProctorEvent[]>;
   getProctorEventsByAttempt(attemptId: string): Promise<ProctorEvent[]>;
   getTeacherTestsInRange(teacherId: string, from?: Date, to?: Date): Promise<any[]>;
+  getAdminSystemSummary(): Promise<any>;
   
   // Profile
   updateProfile(userId: string, data: { fullName?: string; photoUrl?: string | null; hobbies?: string | null; wishes?: string | null }): Promise<User>;
@@ -137,6 +138,44 @@ export interface IStorage {
 }
 
 export class DatabaseStorage implements IStorage {
+  async getAdminSystemSummary(): Promise<any> {
+    const countRows = async (table: any) => {
+      const [result] = await db.select({ value: sql<number>`count(*)` }).from(table);
+      return Number(result?.value ?? 0);
+    };
+
+    const [usersTotal, teachers, students, testsTotal, questionsTotal, attemptsTotal, completedAttempts, messagesTotal, notificationsTotal, materialsTotal, groupsTotal, assignmentsTotal] = await Promise.all([
+      countRows(users),
+      db.select({ value: sql<number>`count(*)` }).from(users).where(eq(users.role, "teacher")).then((rows) => Number(rows[0]?.value ?? 0)),
+      db.select({ value: sql<number>`count(*)` }).from(users).where(eq(users.role, "student")).then((rows) => Number(rows[0]?.value ?? 0)),
+      countRows(tests),
+      countRows(questions),
+      countRows(testAttempts),
+      db.select({ value: sql<number>`count(*)` }).from(testAttempts).where(eq(testAttempts.status, "completed")).then((rows) => Number(rows[0]?.value ?? 0)),
+      countRows(messages),
+      countRows(notifications),
+      countRows(learningMaterials),
+      countRows(studentGroups),
+      countRows(testAssignments),
+    ]);
+
+    return {
+      usersTotal,
+      teachers,
+      students,
+      testsTotal,
+      questionsTotal,
+      attemptsTotal,
+      completedAttempts,
+      messagesTotal,
+      notificationsTotal,
+      materialsTotal,
+      groupsTotal,
+      assignmentsTotal,
+      generatedAt: new Date().toISOString(),
+    };
+  }
+
   async getUser(id: string): Promise<User | undefined> {
     const [user] = await db.select().from(users).where(eq(users.id, id));
     return user || undefined;
